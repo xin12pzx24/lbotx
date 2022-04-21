@@ -12,7 +12,7 @@ import (
 )
 
 type MessageBank struct {
-	messages []linebot.Message
+	messages []linebot.SendingMessage
 	bot      *linebot.Client
 }
 
@@ -27,16 +27,17 @@ var (
 	ErrorTooManyColumn          = errors.New("Too many columns")
 	ErrorActionNumNotConsistent = errors.New("Number of actions is not consistent in each column")
 	ErrorNoColumnTemplate       = errors.New("You did not setup column template first")
+	ErrorInvalidProperties      = errors.New("Cannot place both `text` and `displayText`.")
 )
 
-func (mb *MessageBank) AddMessage(m linebot.Message) error {
+func (mb *MessageBank) AddMessage(m linebot.SendingMessage) error {
 	if mb != nil {
 		if len(mb.messages) > 5 {
 			return ErrorTooManyMessages
 		}
 		mb.messages = append(mb.messages, m)
 	} else {
-		mb.messages = []linebot.Message{m}
+		mb.messages = []linebot.SendingMessage{m}
 	}
 	return nil
 }
@@ -109,25 +110,25 @@ func (pm *PostMan) SendImmediately(tos ...string) ([]string, error) {
 
 	if err == nil {
 		//flush all messages
-		pm.messages = []linebot.Message{}
+		pm.messages = []linebot.SendingMessage{}
 	}
 	return success, err
 }
 
 func validateActionTexts(iaction interface{}) error {
 	switch action := iaction.(type) {
-	case *linebot.URITemplateAction:
+	case *linebot.URIAction:
 		if len([]rune(action.Label)) > 20 {
 			return ErrorTextExceedLimit
 		}
-	case *linebot.MessageTemplateAction:
+	case *linebot.MessageAction:
 		if len([]rune(action.Label)) > 20 {
 			return ErrorTextExceedLimit
 		}
 		if len([]rune(action.Text)) > 300 {
 			return ErrorTextExceedLimit
 		}
-	case *linebot.PostbackTemplateAction:
+	case *linebot.PostbackAction:
 		if len([]rune(action.Label)) > 20 {
 			return ErrorTextExceedLimit
 		}
@@ -136,6 +137,12 @@ func validateActionTexts(iaction interface{}) error {
 		}
 		if len([]rune(action.Data)) > 300 {
 			return ErrorTextExceedLimit
+		}
+		if len([]rune(action.DisplayText)) > 300 {
+			return ErrorTextExceedLimit
+		}
+		if len([]rune(action.DisplayText)) > 0 && len([]rune(action.Text)) > 0 {
+			return ErrorInvalidProperties
 		}
 	case *linebot.MessageImagemapAction:
 		if len([]rune(action.Text)) > 400 {
@@ -179,19 +186,19 @@ func NewImageMapBuilderWith(baseUrl, altText string, width, height int) *ImageMa
 	}
 }
 
-func (ib *ImageMapBuilder) WithMessageAction(text string, x, y, width, height int) *ImageMapBuilder {
+func (ib *ImageMapBuilder) WithMessageAction(label, text string, x, y, width, height int) *ImageMapBuilder {
 	area := linebot.ImagemapArea{x, y, width, height}
-	ib.addAction(linebot.NewMessageImagemapAction(text, area))
+	ib.addAction(linebot.NewMessageImagemapAction(label, text, area))
 	return ib
 }
 
-func (ib *ImageMapBuilder) WithURIAction(linkURL string, x, y, width, height int) *ImageMapBuilder {
+func (ib *ImageMapBuilder) WithURIAction(label, linkURL string, x, y, width, height int) *ImageMapBuilder {
 	area := linebot.ImagemapArea{x, y, width, height}
-	ib.addAction(linebot.NewURIImagemapAction(linkURL, area))
+	ib.addAction(linebot.NewURIImagemapAction(label, linkURL, area))
 	return ib
 }
 
-func (ib *ImageMapBuilder) Build() (linebot.Message, error) {
+func (ib *ImageMapBuilder) Build() (linebot.SendingMessage, error) {
 	if ib.actions == nil || len(ib.actions) == 0 {
 		return nil, ErrorNoAction
 	}
@@ -224,7 +231,7 @@ func (ib *ImageMapBuilder) Build() (linebot.Message, error) {
 type iactionable interface {
 	WithMessageAction(label, text string) iactionable
 	WithURIAction(label, uri string) iactionable
-	WithPostbackAction(label, data, text string) iactionable
+	WithPostbackAction(label, data, text, displayText string) iactionable
 }
 
 type actionable struct {
@@ -240,17 +247,17 @@ func (a *actionable) addAction(action linebot.TemplateAction) {
 }
 
 func (a *actionable) WithMessageAction(label, text string) iactionable {
-	a.addAction(linebot.NewMessageTemplateAction(label, text))
+	a.addAction(linebot.NewMessageAction(label, text))
 	return a
 }
 
 func (a *actionable) WithURIAction(label, uri string) iactionable {
-	a.addAction(linebot.NewURITemplateAction(label, uri))
+	a.addAction(linebot.NewURIAction(label, uri))
 	return a
 }
 
-func (a *actionable) WithPostbackAction(label, data, text string) iactionable {
-	a.addAction(linebot.NewPostbackTemplateAction(label, data, text))
+func (a *actionable) WithPostbackAction(label, data, text, displayText string) iactionable {
+	a.addAction(linebot.NewPostbackAction(label, data, text, displayText))
 	return a
 }
 
@@ -289,7 +296,7 @@ func (b *ButtonMessageBuilder) WithText(text string) *ButtonMessageBuilder {
 	return b
 }
 
-func (b *ButtonMessageBuilder) Build(altMsg string) (linebot.Message, error) {
+func (b *ButtonMessageBuilder) Build(altMsg string) (linebot.SendingMessage, error) {
 	if b.text == "" {
 		return nil, ErrorMissingParam
 	}
@@ -347,7 +354,7 @@ func (b *ConfirmMessageBuilder) WithText(text string) *ConfirmMessageBuilder {
 	return b
 }
 
-func (b *ConfirmMessageBuilder) Build(altMsg string) (linebot.Message, error) {
+func (b *ConfirmMessageBuilder) Build(altMsg string) (linebot.SendingMessage, error) {
 	if b.text == "" {
 		return nil, ErrorMissingParam
 	}
@@ -373,10 +380,11 @@ type CarouselColumn struct {
 }
 
 type ActionTempate struct {
-	actionType        linebot.TemplateActionType
-	labelTemplate     *template.Template
-	textOrUrlTemplate *template.Template
-	dataTemplate      *template.Template
+	actionType          linebot.ActionType
+	labelTemplate       *template.Template
+	textOrUrlTemplate   *template.Template
+	dataTemplate        *template.Template
+	displayTextTemplate *template.Template
 }
 
 type ColumnTemplate struct {
@@ -431,7 +439,7 @@ func (ct *ColumnTemplate) WithMessageAction(label, text string) iactionable {
 	textTempl, _ := template.New("text").Parse(text)
 
 	actionTemplate := &ActionTempate{
-		actionType:        linebot.TemplateActionTypeMessage,
+		actionType:        linebot.ActionTypeMessage,
 		labelTemplate:     labelTempl,
 		textOrUrlTemplate: textTempl,
 	}
@@ -444,7 +452,7 @@ func (ct *ColumnTemplate) WithURIAction(label, uri string) iactionable {
 	uriTempl, _ := template.New("uri").Parse(uri)
 
 	actionTemplate := &ActionTempate{
-		actionType:        linebot.TemplateActionTypeURI,
+		actionType:        linebot.ActionTypeURI,
 		labelTemplate:     labelTempl,
 		textOrUrlTemplate: uriTempl,
 	}
@@ -452,16 +460,18 @@ func (ct *ColumnTemplate) WithURIAction(label, uri string) iactionable {
 	return ct
 }
 
-func (ct *ColumnTemplate) WithPostbackAction(label, data, text string) iactionable {
+func (ct *ColumnTemplate) WithPostbackAction(label, data, text, displayText string) iactionable {
 	labelTempl, _ := template.New("label").Parse(label)
-	textTempl, _ := template.New("text").Parse(label)
+	textTempl, _ := template.New("text").Parse(text)
 	dataTempl, _ := template.New("data").Parse(data)
+	displayTextTempl, _ := template.New("displayText").Parse(displayText)
 
 	actionTemplate := &ActionTempate{
-		actionType:        linebot.TemplateActionTypeMessage,
-		labelTemplate:     labelTempl,
-		textOrUrlTemplate: textTempl,
-		dataTemplate:      dataTempl,
+		actionType:          linebot.ActionTypeMessage,
+		labelTemplate:       labelTempl,
+		textOrUrlTemplate:   textTempl,
+		dataTemplate:        dataTempl,
+		displayTextTemplate: displayTextTempl,
 	}
 	ct.actionsTemplates = append(ct.actionsTemplates, actionTemplate)
 	return ct
@@ -498,6 +508,7 @@ func (ct *ColumnTemplate) generate(data []interface{}) ([]*CarouselColumn, error
 			label := ""
 			textOrUrl := ""
 			data := ""
+			displayText := ""
 
 			if actionTempl.labelTemplate != nil {
 				buf := bytes.NewBufferString("")
@@ -517,13 +528,19 @@ func (ct *ColumnTemplate) generate(data []interface{}) ([]*CarouselColumn, error
 				data = buf.String()
 			}
 
+			if actionTempl.displayTextTemplate != nil {
+				buf := bytes.NewBufferString("")
+				actionTempl.displayTextTemplate.Execute(buf, d)
+				displayText = buf.String()
+			}
+
 			switch actionTempl.actionType {
-			case linebot.TemplateActionTypeMessage:
-				actions = append(actions, linebot.NewMessageTemplateAction(label, textOrUrl))
-			case linebot.TemplateActionTypeURI:
-				actions = append(actions, linebot.NewURITemplateAction(label, textOrUrl))
-			case linebot.TemplateActionTypePostback:
-				actions = append(actions, linebot.NewPostbackTemplateAction(label, data, textOrUrl))
+			case linebot.ActionTypeMessage:
+				actions = append(actions, linebot.NewMessageAction(label, textOrUrl))
+			case linebot.ActionTypeURI:
+				actions = append(actions, linebot.NewURIAction(label, textOrUrl))
+			case linebot.ActionTypePostback:
+				actions = append(actions, linebot.NewPostbackAction(label, data, textOrUrl, displayText))
 			}
 
 			col.actions = actions
@@ -586,7 +603,7 @@ func (cm *CarouselMessageBuilder) GenerateColumnsWith(data ...interface{}) error
 	return nil
 }
 
-func (cm *CarouselMessageBuilder) Build(altMsg string) (linebot.Message, error) {
+func (cm *CarouselMessageBuilder) Build(altMsg string) (linebot.SendingMessage, error) {
 	if len(cm.columns) > 5 {
 		return nil, ErrorTooManyColumn
 	}
