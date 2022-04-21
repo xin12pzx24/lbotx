@@ -4,6 +4,7 @@
 Note: update for line-bot-sdk-go v7.4.0
 
 ==============
+
 lbotx is a wrapper/extension to official Go line bot SDK: https://github.com/line/line-bot-sdk-go
 
 Why lbotx? (NOTE: Document is still under construction)
